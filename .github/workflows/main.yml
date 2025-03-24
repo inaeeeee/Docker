@@ -28,10 +28,11 @@ jobs:
         run: |
           chmod +x /var/lib/pgsql/data/service_templates/Docker/scripts/docker_compose.sh
           /var/lib/pgsql/data/service_templates/Docker/scripts/docker_compose.sh
-          cat /var/lib/pgsql/data/service_templates/Docker/scripts/docker_env.sh
+          cat /var/lib/pgsql/data/service_templates/Docker/docker_env.sh/docker_env.sh
 
       - name: Copy to .env
-        run: cp /var/lib/pgsql/data/service_templates/Docker/scripts/docker_env.sh .env
+        run: cp /var/lib/pgsql/data/service_templates/Docker/docker_env.sh/docker_env.sh .env
+
 
       - name: Upload .env as artifact
         uses: actions/upload-artifact@v4
