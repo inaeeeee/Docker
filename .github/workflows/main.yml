@@ -1,12 +1,10 @@
-name: Docker Compose Up & Env Generator
+name: Docker Compose Up & Generate Env
 
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:  # 수동 실행용 트리거
 
 jobs:
-  docker-up-and-generate-env:
+  deploy-docker-containers:
     runs-on: ubuntu-latest
 
     steps:
@@ -19,22 +17,24 @@ jobs:
       - name: Install Docker Compose
         run: |
           sudo apt-get update
-          sudo apt-get install docker-compose -y
+          sudo apt-get install -y docker-compose
 
-      - name: Build and run containers
-        run: docker-compose up -d
+      - name: Run docker-compose up -d
+        run: |
+          cd /var/lib/pgsql/data/service_templates/Docker/yaml
+          docker-compose up -d
 
       - name: Generate docker_env.sh
         run: |
-          chmod +x generate_docker_env.sh
-          ./generate_docker_env.sh
-          cat docker_env.sh
+          chmod +x /var/lib/pgsql/data/service_templates/Docker/scripts/docker_compose.sh
+          /var/lib/pgsql/data/service_templates/Docker/scripts/docker_compose.sh
+          cat /var/lib/pgsql/data/service_templates/Docker/scripts/docker_env.sh
 
-      - name: Copy to .env file
-        run: cp docker_env.sh .env
+      - name: Copy to .env
+        run: cp /var/lib/pgsql/data/service_templates/Docker/scripts/docker_env.sh .env
 
       - name: Upload .env as artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: docker-env
           path: .env
