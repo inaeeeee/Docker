@@ -61,9 +61,44 @@ jobs:
           echo "🚀 Copying Docker files from /tmp/docker/ on DB Server to Docker Master (172.16.6.77)..."
 
           scp -o StrictHostKeyChecking=no root@192.168.60.64:/tmp/docker/scripts/docker_compose.sh devops@172.16.6.77:/tmp/docker/docker_compose.sh
-          scp -r -o StrictHostKeyChecking=no root@192.168.60.64:/tmp/docker/yaml/. devops@172.16.6.77:/tmp/docker/yaml/
+          scp -o StrictHostKeyChecking=no root@192.168.60.64:/tmp/docker/yaml/docker-compose.yml devops@172.16.6.77:/tmp/docker/yaml/docker-compose.yml
+
+      - name: Modify docker_compose.sh Path (Fix Incorrect Paths)
+        run: |
+          echo "🔧 Updating docker_compose.sh to use correct path..."
+          ssh devops@172.16.6.77 "sed -i 's|/var/lib/postgresql/data/service_templates/Docker/yaml/docker-compose.yml|/tmp/docker/yaml/docker-compose.yml|g' /tmp/docker/docker_compose.sh"
 
       - name: Execute Docker Compose Script on Docker Master Server
         run: |
           echo "🚀 Executing Docker Compose script on Docker master server (172.16.6.77)..."
           ssh -o StrictHostKeyChecking=no devops@172.16.6.77 "chmod +x /tmp/docker/docker_compose.sh && /tmp/docker/docker_compose.sh"
+
+      - name: Store Docker Deployment Information in PostgreSQL
+        run: |
+          echo "🗄 Storing Docker deployment information in PostgreSQL..."
+
+          TEMPLATE_ID=$(psql -h 192.168.60.67 -p 5001 -U postgres -d solmakasedb -t -w -c \
+            "SELECT id FROM ServiceTemplate WHERE name = 'Docker';" | xargs)
+
+          if [[ -z "$TEMPLATE_ID" ]]; then
+              echo "❌ ERROR: No matching ServiceTemplate found for 'Docker'!"
+              exit 1
+          fi
+
+          echo "📌 Found Template ID: $TEMPLATE_ID"
+
+          # 고정값을 사용하여 데이터 저장
+          HOSTNAME="docker-master"
+          IP_ADDRESS="172.16.6.77"
+          STATUS="running"
+          DEPLOY_METHOD="docker"
+
+          echo "📌 Storing Docker Master Node: $HOSTNAME ($IP_ADDRESS) in PostgreSQL"
+
+          psql -h 192.168.60.67 -p 5000 -U postgres -d solmakasedb -c \
+          "INSERT INTO VM (template_id, hostname, ip_address, status, deploy_method)
+           VALUES ($TEMPLATE_ID, '$HOSTNAME', '$IP_ADDRESS', '$STATUS', '$DEPLOY_METHOD')
+           ON CONFLICT (hostname) 
+           DO UPDATE SET ip_address = EXCLUDED.ip_address, status = '$STATUS', deploy_method = '$DEPLOY_METHOD';"
+
+          echo "✅ Docker Deployment Information Successfully Stored in PostgreSQL"
