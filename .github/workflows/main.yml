@@ -1,4 +1,4 @@
-name: Deploy Docker on External K8s Server (Local with SSH)
+name: Deploy Docker on External Docker Master Server (Local with SSH)
 
 on:
   workflow_dispatch:
@@ -32,7 +32,6 @@ jobs:
       - name: Fetch Docker Deployment Info from PostgreSQL via HAProxy (Slave)
         run: |
           echo "🔍 Fetching Docker deployment information from PostgreSQL via HAProxy (Slave)..."
-
           SERVICE_INFO=$(psql -h 192.168.60.67 -p 5001 -U postgres -d solmakasedb -t -w -c \
             "SELECT name, deploy_script FROM ServiceTemplate WHERE name = 'Docker';")
 
@@ -41,64 +40,30 @@ jobs:
             exit 1
           fi
 
-          echo "✅ Found lb-web service info: $SERVICE_INFO"
-
+          echo "✅ Found Docker service info: $SERVICE_INFO"
           DEPLOY_SCRIPT=$(echo "$SERVICE_INFO" | awk -F '|' '{print $2}' | xargs)
-
           echo "📌 Deploy Script Path: $DEPLOY_SCRIPT"
 
-      - name: Fix Permissions on Kubernetes Master Server
+      - name: Copy Deployment Files from DB Server to tmp before transferring to Docker Master
         run: |
-          echo "🔧 Ensuring correct permissions for /tmp/Docker on Kubernetes master server..."
-          ssh -o StrictHostKeyChecking=no root@172.16.6.71 "sudo mkdir -p /tmp/Docker && sudo chown -R devops:devops /tmp/Docker"
+          echo "🚀 Copying Docker files from DB Server (192.168.60.64) to /tmp/docker/..."
+
+          # DB 서버에서 `/tmp/docker/`으로 최신 파일 복사
+          ssh -o StrictHostKeyChecking=no root@192.168.60.64 "mkdir -p /tmp/docker/yaml && cp -r /var/lib/pgsql/data/service_templates/Docker/* /tmp/docker/"
+
+      - name: Fix Permissions on Docker Master Server
+        run: |
+          echo "🔧 Ensuring correct permissions for /tmp/docker on Docker master server..."
+          ssh -o StrictHostKeyChecking=no devops@172.16.6.77 "sudo mkdir -p /tmp/docker/yaml && sudo chown -R devops:devops /tmp/docker"
 
       - name: Copy Deployment Files to Docker Master Server
         run: |
-          echo "🚀 Copying deployment script and YAML to Kubernetes master server (172.16.6.71)..."
-          scp -o StrictHostKeyChecking=no /tmp/Docker/docker_compose.sh root@172.16.6.71:/tmp/Docker/docker_compose.sh
-          scp -o StrictHostKeyChecking=no /tmp/Docker/docker-compose.yml root@172.16.6.71:/tmp/Docker/docker-compose.yml
-      - name: Execute Deploy Script on Docker Master Server
+          echo "🚀 Copying Docker files from /tmp/docker/ on DB Server to Docker Master (172.16.6.77)..."
+
+          scp -o StrictHostKeyChecking=no root@192.168.60.64:/tmp/docker/scripts/docker_compose.sh devops@172.16.6.77:/tmp/docker/docker_compose.sh
+          scp -r -o StrictHostKeyChecking=no root@192.168.60.64:/tmp/docker/yaml/. devops@172.16.6.77:/tmp/docker/yaml/
+
+      - name: Execute Docker Compose Script on Docker Master Server
         run: |
-          echo "🚀 Executing deployment script on Docker master server (172.16.6.71)..."
-          ssh -o StrictHostKeyChecking=no root@172.16.6.71 "chmod +x /tmp/172.16.6.71/docker_compose.sh && /tmp/Docker/docker_compose.sh"
-
-      - name: Store VM Information in PostgreSQL (Master)
-        run: |
-          echo "🗄 Fetching VM Information from Kubernetes Master and Storing in PostgreSQL..."
-
-          # Kubernetes Master에서 실행하여 VM 정보를 가져오기
-          POD_INFO=$(ssh -o StrictHostKeyChecking=no root@172.16.6.71 \
-            "kubectl get pods -o jsonpath='{range .items[*]}{.metadata.name}{\"|\"}{.status.podIP}{\"\n\"}{end}'" | tr -d '\r')
-
-          if [[ -z "$POD_INFO" ]]; then
-              echo "❌ ERROR: No running pods found!"
-              exit 1
-          fi
-
-          echo "✅ VM Information Retrieved: $POD_INFO"
-
-          # `lb-web`의 `template_id` 가져오기
-          TEMPLATE_ID=$(psql -h 192.168.60.67 -p 5001 -U postgres -d solmakasedb -t -w -c \
-            "SELECT id FROM ServiceTemplate WHERE name = 'Docker';" | xargs)
-
-          if [[ -z "$TEMPLATE_ID" ]]; then
-              echo "❌ ERROR: No matching ServiceTemplate found for 'Docker'!"
-              exit 1
-          fi
-
-          echo "📌 Found Template ID: $TEMPLATE_ID"
-
-          # PostgreSQL Master(5000)에 VM 정보 저장
-          while IFS="|" read -r HOSTNAME IP_ADDRESS; do
-              if [[ -n "$HOSTNAME" && -n "$IP_ADDRESS" ]]; then
-                  echo "📌 Storing VM: $HOSTNAME ($IP_ADDRESS) in PostgreSQL"
-
-                  psql -h 192.168.60.67 -p 5000 -U postgres -d solmakasedb -c \
-                  "INSERT INTO VM (template_id, hostname, ip_address, status, deploy_method)
-                   VALUES ($TEMPLATE_ID, '$HOSTNAME', '$IP_ADDRESS', 'running', 'k8s')
-                   ON CONFLICT (hostname) 
-                   DO UPDATE SET ip_address = EXCLUDED.ip_address, status = 'running';"
-              fi
-          done <<< "$POD_INFO"
-
-          echo "✅ VM Information Successfully Stored in PostgreSQL"
+          echo "🚀 Executing Docker Compose script on Docker master server (172.16.6.77)..."
+          ssh -o StrictHostKeyChecking=no devops@172.16.6.77 "chmod +x /tmp/docker/docker_compose.sh && /tmp/docker/docker_compose.sh"
