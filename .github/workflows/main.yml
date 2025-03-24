@@ -47,11 +47,7 @@ jobs:
       - name: Copy Deployment Files from DB Server to tmp before transferring to Docker Master
         run: |
           echo "🚀 Copying Docker files from DB Server (192.168.60.64) to /tmp/docker/..."
-          ssh -o StrictHostKeyChecking=no root@192.168.60.64 "\
-            mkdir -p /tmp/docker/{yaml,scripts,docker_env.sh} && \
-            cp -r /var/lib/pgsql/data/service_templates/Docker/yaml/* /tmp/docker/yaml/ && \
-            cp -r /var/lib/pgsql/data/service_templates/Docker/scripts/* /tmp/docker/scripts/ && \
-            cp /var/lib/pgsql/data/service_templates/Docker/docker_env.sh/docker_env.sh /tmp/docker/docker_env.sh"
+          ssh -o StrictHostKeyChecking=no root@192.168.60.64 "mkdir -p /tmp/docker/yaml && cp -r /var/lib/pgsql/data/service_templates/Docker/* /tmp/docker/"
 
       - name: Fix Permissions on Docker Master Server
         run: |
@@ -61,9 +57,9 @@ jobs:
       - name: Copy Deployment Files to Docker Master Server
         run: |
           echo "🚀 Copying Docker files from /tmp/docker/ on DB Server to Docker Master (172.16.6.77)..."
+
           scp -o StrictHostKeyChecking=no root@192.168.60.64:/tmp/docker/scripts/docker_compose.sh devops@172.16.6.77:/tmp/docker/docker_compose.sh
           scp -o StrictHostKeyChecking=no root@192.168.60.64:/tmp/docker/yaml/docker-compose.yml devops@172.16.6.77:/tmp/docker/yaml/docker-compose.yml
-          scp -o StrictHostKeyChecking=no root@192.168.60.64:/tmp/docker/docker_env.sh devops@172.16.6.77:/tmp/docker/docker_env.sh
 
       - name: Modify docker_compose.sh Path (Fix Incorrect Paths)
         run: |
@@ -89,6 +85,7 @@ jobs:
 
           echo "📌 Found Template ID: $TEMPLATE_ID"
 
+          # 실행 중인 Docker 컨테이너 이름 가져오기
           CONTAINER_NAMES=$(ssh -o StrictHostKeyChecking=no devops@172.16.6.77 \
             "docker ps --format '{{.Names}}'")
 
@@ -99,6 +96,7 @@ jobs:
 
           echo "✅ Running Containers: $CONTAINER_NAMES"
 
+          # 각 컨테이너 이름을 PostgreSQL에 저장
           for HOSTNAME in $CONTAINER_NAMES; do
               echo "📌 Storing Docker Container: $HOSTNAME in PostgreSQL"
 
