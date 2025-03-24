@@ -1,33 +1,104 @@
-name: Docker Compose Up & Generate Env
+name: Deploy Docker on External K8s Server (Local with SSH)
 
 on:
   workflow_dispatch:
 
 jobs:
-  deploy-docker-containers:
-    runs-on: self-hosted 
+  deploy:
+    runs-on: self-hosted
 
     steps:
-      - name: Run docker-compose up -d
+      - name: Install PostgreSQL Client on CentOS
         run: |
-          cd /var/lib/pgsql/data/service_templates/Docker/yaml
-          docker-compose up -d
+          echo "🔧 Checking if PostgreSQL Client (psql) is installed..."
+          if ! command -v psql &> /dev/null
+          then
+            echo "⚠️ PostgreSQL Client not found. Installing..."
+            sudo yum install -y postgresql
+          else
+            echo "✅ PostgreSQL Client is already installed."
+          fi
 
-      - name: Generate docker_env.sh
+      - name: Setup PostgreSQL Authentication (Avoid Password Prompts)
         run: |
-          chmod +x /var/lib/pgsql/data/service_templates/Docker/scripts/docker_compose.sh
-          /var/lib/pgsql/data/service_templates/Docker/scripts/docker_compose.sh
-          cat /var/lib/pgsql/data/service_templates/Docker/docker_env.sh/docker_env.sh
+          echo "🔧 Configuring PostgreSQL authentication..."
+          echo "192.168.60.67:5001:*:postgres:qaz123" > ~/.pgpass  # Slave (SELECT)
+          echo "192.168.60.67:5000:*:postgres:qaz123" >> ~/.pgpass  # Master (INSERT, UPDATE)
+          chmod 600 ~/.pgpass
 
-      - name: Copy to .env
-        run: cp /var/lib/pgsql/data/service_templates/Docker/docker_env.sh/docker_env.sh .env
+      - name: Checkout Repository
+        uses: actions/checkout@v3
 
-      - name: Upload .env as artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: docker-env
-          path: .env
+      - name: Fetch Docker Deployment Info from PostgreSQL via HAProxy (Slave)
+        run: |
+          echo "🔍 Fetching Docker deployment information from PostgreSQL via HAProxy (Slave)..."
 
-        with:
-          name: docker-env
-          path: .env
+          SERVICE_INFO=$(psql -h 192.168.60.67 -p 5001 -U postgres -d solmakasedb -t -w -c \
+            "SELECT name, deploy_script FROM ServiceTemplate WHERE name = 'Docker';")
+
+          if [[ -z "$SERVICE_INFO" ]]; then
+            echo "❌ No deployment information found for Docker!"
+            exit 1
+          fi
+
+          echo "✅ Found lb-web service info: $SERVICE_INFO"
+
+          DEPLOY_SCRIPT=$(echo "$SERVICE_INFO" | awk -F '|' '{print $2}' | xargs)
+
+          echo "📌 Deploy Script Path: $DEPLOY_SCRIPT"
+
+      - name: Fix Permissions on Kubernetes Master Server
+        run: |
+          echo "🔧 Ensuring correct permissions for /tmp/Docker on Kubernetes master server..."
+          ssh -o StrictHostKeyChecking=no root@172.16.6.71 "sudo mkdir -p /tmp/Docker && sudo chown -R devops:devops /tmp/Docker"
+
+      - name: Copy Deployment Files to Docker Master Server
+        run: |
+          echo "🚀 Copying deployment script and YAML to Kubernetes master server (172.16.6.71)..."
+          scp -o StrictHostKeyChecking=no /tmp/Docker/docker_compose.sh root@172.16.6.71:/tmp/Docker/docker_compose.sh
+          scp -o StrictHostKeyChecking=no /tmp/Docker/docker-compose.yml root@172.16.6.71:/tmp/Docker/docker-compose.yml
+      - name: Execute Deploy Script on Docker Master Server
+        run: |
+          echo "🚀 Executing deployment script on Docker master server (172.16.6.71)..."
+          ssh -o StrictHostKeyChecking=no root@172.16.6.71 "chmod +x /tmp/172.16.6.71/docker_compose.sh && /tmp/Docker/docker_compose.sh"
+
+      - name: Store VM Information in PostgreSQL (Master)
+        run: |
+          echo "🗄 Fetching VM Information from Kubernetes Master and Storing in PostgreSQL..."
+
+          # Kubernetes Master에서 실행하여 VM 정보를 가져오기
+          POD_INFO=$(ssh -o StrictHostKeyChecking=no root@172.16.6.71 \
+            "kubectl get pods -o jsonpath='{range .items[*]}{.metadata.name}{\"|\"}{.status.podIP}{\"\n\"}{end}'" | tr -d '\r')
+
+          if [[ -z "$POD_INFO" ]]; then
+              echo "❌ ERROR: No running pods found!"
+              exit 1
+          fi
+
+          echo "✅ VM Information Retrieved: $POD_INFO"
+
+          # `lb-web`의 `template_id` 가져오기
+          TEMPLATE_ID=$(psql -h 192.168.60.67 -p 5001 -U postgres -d solmakasedb -t -w -c \
+            "SELECT id FROM ServiceTemplate WHERE name = 'Docker';" | xargs)
+
+          if [[ -z "$TEMPLATE_ID" ]]; then
+              echo "❌ ERROR: No matching ServiceTemplate found for 'Docker'!"
+              exit 1
+          fi
+
+          echo "📌 Found Template ID: $TEMPLATE_ID"
+
+          # PostgreSQL Master(5000)에 VM 정보 저장
+          while IFS="|" read -r HOSTNAME IP_ADDRESS; do
+              if [[ -n "$HOSTNAME" && -n "$IP_ADDRESS" ]]; then
+                  echo "📌 Storing VM: $HOSTNAME ($IP_ADDRESS) in PostgreSQL"
+
+                  psql -h 192.168.60.67 -p 5000 -U postgres -d solmakasedb -c \
+                  "INSERT INTO VM (template_id, hostname, ip_address, status, deploy_method)
+                   VALUES ($TEMPLATE_ID, '$HOSTNAME', '$IP_ADDRESS', 'running', 'k8s')
+                   ON CONFLICT (hostname) 
+                   DO UPDATE SET ip_address = EXCLUDED.ip_address, status = 'running';"
+              fi
+          done <<< "$POD_INFO"
+
+          echo "✅ VM Information Successfully Stored in PostgreSQL"
