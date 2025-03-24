@@ -61,6 +61,16 @@ jobs:
           scp -o StrictHostKeyChecking=no root@192.168.60.64:/tmp/docker/scripts/docker_compose.sh devops@172.16.6.77:/tmp/docker/docker_compose.sh
           scp -o StrictHostKeyChecking=no root@192.168.60.64:/tmp/docker/yaml/docker-compose.yml devops@172.16.6.77:/tmp/docker/yaml/docker-compose.yml
 
+      - name: Copy docker_env.sh to Docker Master Server
+        run: |
+          echo "🚀 Copying docker_env.sh to Docker Master Server (172.16.6.77)..."
+          scp -o StrictHostKeyChecking=no root@192.168.60.64:/tmp/docker/docker_env.sh devops@172.16.6.77:/tmp/docker/docker_env.sh
+
+      - name: Source docker_env.sh on Docker Master Server
+        run: |
+          echo "🔧 Making docker_env.sh executable and sourcing it (if needed)..."
+          ssh -o StrictHostKeyChecking=no devops@172.16.6.77 "chmod +x /tmp/docker/docker_env.sh"
+
       - name: Modify docker_compose.sh Path (Fix Incorrect Paths)
         run: |
           echo "🔧 Updating docker_compose.sh to use correct path..."
