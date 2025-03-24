@@ -47,8 +47,6 @@ jobs:
       - name: Copy Deployment Files from DB Server to tmp before transferring to Docker Master
         run: |
           echo "🚀 Copying Docker files from DB Server (192.168.60.64) to /tmp/docker/..."
-
-          # DB 서버에서 `/tmp/docker/`으로 최신 파일 복사
           ssh -o StrictHostKeyChecking=no root@192.168.60.64 "mkdir -p /tmp/docker/yaml && cp -r /var/lib/pgsql/data/service_templates/Docker/* /tmp/docker/"
 
       - name: Fix Permissions on Docker Master Server
@@ -73,9 +71,9 @@ jobs:
           echo "🚀 Executing Docker Compose script on Docker master server (172.16.6.77)..."
           ssh -o StrictHostKeyChecking=no devops@172.16.6.77 "chmod +x /tmp/docker/docker_compose.sh && /tmp/docker/docker_compose.sh"
 
-      - name: Store Docker Deployment Information in PostgreSQL
+      - name: Store Running Docker Containers Information in PostgreSQL
         run: |
-          echo "🗄 Storing Docker deployment information in PostgreSQL..."
+          echo "🗄 Fetching running Docker containers info and storing in PostgreSQL..."
 
           TEMPLATE_ID=$(psql -h 192.168.60.67 -p 5001 -U postgres -d solmakasedb -t -w -c \
             "SELECT id FROM ServiceTemplate WHERE name = 'Docker';" | xargs)
@@ -87,18 +85,26 @@ jobs:
 
           echo "📌 Found Template ID: $TEMPLATE_ID"
 
-          # 고정값을 사용하여 데이터 저장
-          HOSTNAME="docker-master"
-          IP_ADDRESS="172.16.6.77"
-          STATUS="running"
-          DEPLOY_METHOD="docker"
+          # 실행 중인 Docker 컨테이너 이름 가져오기
+          CONTAINER_NAMES=$(ssh -o StrictHostKeyChecking=no devops@172.16.6.77 \
+            "docker ps --format '{{.Names}}'")
 
-          echo "📌 Storing Docker Master Node: $HOSTNAME ($IP_ADDRESS) in PostgreSQL"
+          if [[ -z "$CONTAINER_NAMES" ]]; then
+              echo "❌ ERROR: No running Docker containers found!"
+              exit 1
+          fi
 
-          psql -h 192.168.60.67 -p 5000 -U postgres -d solmakasedb -c \
-          "INSERT INTO VM (template_id, hostname, ip_address, status, deploy_method)
-           VALUES ($TEMPLATE_ID, '$HOSTNAME', '$IP_ADDRESS', '$STATUS', '$DEPLOY_METHOD')
-           ON CONFLICT (hostname) 
-           DO UPDATE SET ip_address = EXCLUDED.ip_address, status = '$STATUS', deploy_method = '$DEPLOY_METHOD';"
+          echo "✅ Running Containers: $CONTAINER_NAMES"
 
-          echo "✅ Docker Deployment Information Successfully Stored in PostgreSQL"
+          # 각 컨테이너 이름을 PostgreSQL에 저장
+          for HOSTNAME in $CONTAINER_NAMES; do
+              echo "📌 Storing Docker Container: $HOSTNAME in PostgreSQL"
+
+              psql -h 192.168.60.67 -p 5000 -U postgres -d solmakasedb -c \
+              "INSERT INTO VM (template_id, hostname, ip_address, status, deploy_method)
+               VALUES ($TEMPLATE_ID, '$HOSTNAME', '172.16.6.77', 'running', 'docker')
+               ON CONFLICT (hostname) 
+               DO UPDATE SET ip_address = EXCLUDED.ip_address, status = 'running', deploy_method = 'docker';"
+          done
+
+          echo "✅ Docker Container Information Successfully Stored in PostgreSQL"
